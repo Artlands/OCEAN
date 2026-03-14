@@ -5,7 +5,7 @@
 ## Build
 
 ```bash
-wget https://www.cs.virginia.edu/stream/FTP/Code/stream.c
+wget https://www.cs.virginia.edu/stream/FTP/Code/Versions/stream_mpi.c
 mpicc -O3 -fopenmp -DSTREAM_ARRAY_SIZE=1000000  -o stream_mpi_small  stream.c
 mpicc -O3 -fopenmp -DSTREAM_ARRAY_SIZE=10000000 -o stream_mpi_medium stream.c
 mpicc -O3 -fopenmp -DSTREAM_ARRAY_SIZE=80000000 -o stream_mpi_large  stream.c
