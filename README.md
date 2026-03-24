@@ -1,7 +1,19 @@
 
-![Commits](https://img.shields.io/github/commit-activity/t/cxl-emu/OCEAN)
-![issues](https://img.shields.io/github/issues/cxl-emu/OCEAN?label=issues&color=yellow)
-![pull requests](https://img.shields.io/github/issues-pr/cxl-emu/OCEAN?label=pull%20requests&color=brightgreen)
+[![GitHub Repo stars](https://img.shields.io/github/stars/cxl-emu/OCEAN?style=flat&color=red)](https://github.com/cxl-emu/OCEAN/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/cxl-emu/OCEAN?style=flat&color=yellow)
+](https://github.com/cxl-emu/OCEAN/forks)
+[![GitHub contributors](https://img.shields.io/github/contributors-anon/cxl-emu/OCEAN?style=flat&color=brightgreen)](https://github.com/cxl-emu/OCEAN/graphs/contributors)
+[![GitHub watchers](https://img.shields.io/github/watchers/cxl-emu/OCEAN?style=flat&color=blue)](https://github.com/cxl-emu/OCEAN/watchers)
+
+[![issues](https://img.shields.io/github/issues/cxl-emu/OCEAN?label=issues&color=yellow)](https://github.com/cxl-emu/OCEAN/issues)
+[![pull requests](https://img.shields.io/github/issues-pr/cxl-emu/OCEAN?label=pull%20requests&color=brightgreen)](https://github.com/cxl-emu/OCEAN/pulls)
+[![Commits](https://img.shields.io/github/commit-activity/t/cxl-emu/OCEAN)](https://github.com/cxl-emu/OCEAN/commits/main/)
+
+![GitHub repo size](https://img.shields.io/github/repo-size/cxl-emu/OCEAN?style=flat&color=red)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/m/cxl-emu/OCEAN?style=flat&color=yellow)
+
+![GitHub active maintenance](https://img.shields.io/badge/maintenance-active-brightgreen.svg)
+![GitHub last commit](https://img.shields.io/github/last-commit/cxl-emu/OCEAN?style=flat&color=blue)
 
 # OCEAN
 OCEAN – <ins>O</ins>pen-source <ins>C</ins>XL <ins>E</ins>mulation at Hyperscale <ins>A</ins>rchitecture and <ins>N</ins>etworking
