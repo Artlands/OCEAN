@@ -1,39 +1,70 @@
-#!/bin/bash
-set -x
-set -e
+#!/usr/bin/env bash
+set -euxo pipefail
 
-git submodule add https://github.com/CXLMemUring/qemu lib/qemu || true
-git submodule add https://github.com/CXLMemUring/tigon workloads/tigon || true
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "${script_dir}/.." && pwd)"
+qemu_prefix="${QEMU_PREFIX:-${HOME}/.local/ocean/qemu}"
+cd "${repo_root}"
 
-sudo apt update && sudo apt install -y llvm-dev clang libbpf-dev libclang-dev python3-pip libcxxopts-dev libboost-dev nvidia-cuda-dev libfmt-dev libspdlog-dev librdmacm-dev
-python3 -m pip install --break-system-packages tomli
-python3 -m pip install --break-system-packages gdown
-sudo apt-get install -y libglib2.0-dev libgcrypt20-dev zlib1g-dev \
-    autoconf automake libtool bison flex libpixman-1-dev bc \
-    make ninja-build libncurses-dev libelf-dev libssl-dev debootstrap \
-    libcap-ng-dev libattr1-dev libslirp-dev libslirp0 libpmem-dev
+warn() {
+    printf '[setup_host] warning: %s\n' "$*" >&2
+}
 
-sudo apt update
-sudo apt install -y software-properties-common
-sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-sudo apt update
-sudo apt install -y gcc-13 g++-13
+check_rocky() {
+    # shellcheck disable=SC1091
+    source /etc/os-release
+    if [[ "${ID}" != "rocky" ]]; then
+        printf 'This script only supports Rocky Linux. Detected: %s\n' "${PRETTY_NAME}" >&2
+        exit 1
+    fi
+}
 
-mkdir temp && cd temp
-wget https://github.com/Kitware/CMake/releases/download/v4.2.3/cmake-4.2.3.tar.gz
-tar zxvf cmake-4.2.3.tar.gz 
-cd cmake-4.2.3/
-sudo ./bootstrap
-sudo make -j$(nproc)
-sudo make install
-cmake --version
-cd ../..
-sudo rm -rf temp
+load_gcc_toolchain() {
+    if ! command -v ml >/dev/null 2>&1; then
+        if [[ -f /etc/profile.d/modules.sh ]]; then
+            # shellcheck disable=SC1091
+            source /etc/profile.d/modules.sh
+        fi
+    fi
 
-cd ./lib/qemu
-mkdir -p build
-cd build
-../configure --prefix=/usr/local --target-list=x86_64-softmmu --enable-debug --enable-libpmem --enable-slirp
-make -j$(nproc)
-sudo make install
-/usr/local/bin/qemu-system-x86_64 --version
+    if ! command -v ml >/dev/null 2>&1; then
+        warn "Environment modules are unavailable. Load gcc/15.2.0 before running this script."
+        return
+    fi
+
+    ml load gcc/15.2.0
+    export CC="${CC:-gcc}"
+    export CXX="${CXX:-g++}"
+}
+
+install_python_helpers() {
+    python3 -m pip install --user --upgrade tomli gdown
+}
+
+init_submodules() {
+    git submodule sync -- lib/qemu workloads/tigon || true
+    git submodule update --init --recursive lib/qemu workloads/tigon
+}
+
+build_qemu() {
+    pushd lib/qemu
+    mkdir -p build
+    pushd build
+    CC="${CC:-gcc}" CXX="${CXX:-g++}" ../configure --prefix="${qemu_prefix}" --target-list=x86_64-softmmu --enable-debug --enable-libpmem --enable-slirp
+    make -j"$(nproc)"
+    make install
+    popd
+    popd
+
+    printf 'QEMU installed under %s. Add %s/bin to PATH or set QEMU_BINARY explicitly.\n' "${qemu_prefix}" "${qemu_prefix}"
+}
+
+main() {
+    check_rocky
+    load_gcc_toolchain
+    init_submodules
+    install_python_helpers
+    build_qemu
+}
+
+main "$@"
