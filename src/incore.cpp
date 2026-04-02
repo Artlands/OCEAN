@@ -98,7 +98,7 @@ bool get_cpu_info(struct CPUInfo *cpu_info) {
     }
 
     if (cpu_info->cpu_family != 6) {
-        SPDLOG_ERROR("It doesn't support this CPU. CPU Family: %u\n", cpu_info->cpu_family);
+        SPDLOG_ERROR("It doesn't support this CPU. CPU Family: {}", cpu_info->cpu_family);
         return false;
     }
 

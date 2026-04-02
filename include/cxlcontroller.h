@@ -16,6 +16,7 @@
 #include "hdm_decoder.h"
 #include "coherency_engine.h"
 #include "lbr.h"
+#include <functional>
 #include <memory>
 #include <queue>
 #include <shared_mutex>

@@ -23,6 +23,9 @@ Compute Express Link (CXL) 3.0 introduces powerful memory pooling and promises t
 git clone https://github.com/cxl-emu/OCEAN.git
 cd OCEAN
 bash ./script/setup_host.sh
+# Run the root package-install step on every node where you will build or run OCEAN.
+# This installs packages such as cxxopts-devel and spdlog-devel that CMake expects.
+sudo bash ./script/setup_host_sudo.sh
 # Assuming 2 hosts simulation. Change this based on the number of hosts you want to simulate. Skip this if you are using multiple physical machines:
 bash ./script/setup_network.sh 2
 
@@ -48,7 +51,12 @@ bash ./script/verify_optional_cross_machine_network.sh 1 <host_id>
 
 mkdir build
 cd build
-cmake .. -DSERVER_MODE=ON -DCMAKE_CXX_COMPILER=g++-13
+# On this Rocky/HPC environment, load the GCC 15.2.0 module first.
+ml load gcc/15.2.0
+# If this build directory was previously configured with another compiler, clear the cache first.
+rm -f CMakeCache.txt
+rm -rf CMakeFiles
+cmake .. -DSERVER_MODE=ON -DCMAKE_CXX_COMPILER=g++
 make -j$(nproc)
 wget https://asplos.dev/about/bzImage
 gdown 1ga5CN3_H1qfReer99w_QcVOYb6R21JHI

@@ -14,6 +14,7 @@
 #include "cxlcontroller.h"
 #include "cxlendpoint.h"
 #include "helper.h"
+#include <functional>
 #include <map>
 #include <random>
 

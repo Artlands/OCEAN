@@ -17,6 +17,7 @@
 #include <atomic>
 #include <mutex>
 #include <sched.h>
+#include <thread>
 #include <vector>
 
 enum MONITOR_STATUS {

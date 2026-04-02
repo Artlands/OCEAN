@@ -132,13 +132,13 @@ void Helper::detach_children() {
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDWAIT;
     if (sigaction(SIGCHLD, &sa, nullptr) < 0) {
-        SPDLOG_ERROR("Failed to sigaction: %s", strerror(errno));
+        SPDLOG_ERROR("Failed to sigaction: {}", strerror(errno));
     }
     sa.sa_handler = suspend_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
     if (sigaction(SIGINT, &sa, nullptr) < 0) {
-        SPDLOG_ERROR("Failed to sigaction: %s", strerror(errno));
+        SPDLOG_ERROR("Failed to sigaction: {}", strerror(errno));
     }
 }
 int PMUInfo::start_all_pmcs() {
