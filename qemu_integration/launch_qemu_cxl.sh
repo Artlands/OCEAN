@@ -3,6 +3,8 @@
 QEMU_BINARY=${QEMU_BINARY:-$HOME/.local/ocean/qemu/bin/qemu-system-x86_64}
 CXL_MEMSIM_HOST=${CXL_MEMSIM_HOST:-127.0.0.1}
 CXL_MEMSIM_PORT=${CXL_MEMSIM_PORT:-9999}
+CXL_MEMSIM_RDMA_PORT=${CXL_MEMSIM_RDMA_PORT:-$((CXL_MEMSIM_PORT + 1000))}
+CXL_TRANSPORT_MODE=${CXL_TRANSPORT_MODE:-shm}
 VM_MEMORY=${VM_MEMORY:-2G}
 CXL_MEMORY=${CXL_MEMORY:-4G}
 DISK_IMAGE=${DISK_IMAGE:-plucky-server-cloudimg-amd64.img}
@@ -13,9 +15,12 @@ if [[ ! -x "${QEMU_BINARY}" ]]; then
     exit 1
 fi
 
-# Enable SHM mode with lock-free coherency
-export CXL_TRANSPORT_MODE=shm
-export CXL_HOST_ID=0
+export CXL_MEMSIM_HOST
+export CXL_MEMSIM_PORT
+export CXL_MEMSIM_RDMA_PORT
+export CXL_TRANSPORT_MODE
+export CXL_HOST_ID=${CXL_HOST_ID:-0}
+
 "${QEMU_BINARY}" \
     --enable-kvm -cpu qemu64,+xsave,+rdtscp,+avx,+avx2,+sse4.1,+sse4.2,+avx512f,+avx512dq,+avx512ifma,+avx512cd,+avx512bw,+avx512vl,+avx512vbmi,+clflushopt  \
     -m 16G,maxmem=32G,slots=8 \

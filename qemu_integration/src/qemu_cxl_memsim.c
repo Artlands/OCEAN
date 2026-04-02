@@ -13,6 +13,11 @@
 
 static CXLMemSimContext *g_ctx = NULL;
 
+static bool use_rdma_transport(void) {
+    const char *mode = getenv("CXL_TRANSPORT_MODE");
+    return mode && strcmp(mode, "rdma") == 0;
+}
+
 static uint64_t get_timestamp_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -21,42 +26,61 @@ static uint64_t get_timestamp_ns(void) {
 
 static int connect_to_cxlmemsim(CXLMemSimContext *ctx) {
     struct sockaddr_in server_addr;
-    
+
+    if (use_rdma_transport()) {
+        if (cxlmemsim_rdma_init(ctx->host, ctx->port) < 0) {
+            return -1;
+        }
+        ctx->connected = true;
+        return 0;
+    }
+
     ctx->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (ctx->socket_fd < 0) {
         perror("socket");
         return -1;
     }
-    
+
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(ctx->port);
-    
+
     if (inet_pton(AF_INET, ctx->host, &server_addr.sin_addr) <= 0) {
         perror("inet_pton");
         close(ctx->socket_fd);
         return -1;
     }
-    
+
     if (connect(ctx->socket_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("connect");
         close(ctx->socket_fd);
         return -1;
     }
-    
+
     ctx->connected = true;
     return 0;
 }
 
 static int send_request(CXLMemSimContext *ctx, CXLMemSimRequest *req, CXLMemSimResponse *resp) {
     pthread_mutex_lock(&ctx->lock);
-    
+
     if (!ctx->connected) {
         if (connect_to_cxlmemsim(ctx) < 0) {
             pthread_mutex_unlock(&ctx->lock);
             return -1;
         }
     }
-    
+
+    if (use_rdma_transport()) {
+        if (cxlmemsim_rdma_send_request(req, resp) < 0) {
+            ctx->connected = false;
+            cxlmemsim_rdma_cleanup();
+            pthread_mutex_unlock(&ctx->lock);
+            return -1;
+        }
+        pthread_mutex_unlock(&ctx->lock);
+        return 0;
+    }
+
     ssize_t sent = send(ctx->socket_fd, req, sizeof(*req), 0);
     if (sent != sizeof(*req)) {
         perror("send");
@@ -65,7 +89,7 @@ static int send_request(CXLMemSimContext *ctx, CXLMemSimRequest *req, CXLMemSimR
         pthread_mutex_unlock(&ctx->lock);
         return -1;
     }
-    
+
     ssize_t received = recv(ctx->socket_fd, resp, sizeof(*resp), MSG_WAITALL);
     if (received != sizeof(*resp)) {
         perror("recv");
@@ -74,7 +98,7 @@ static int send_request(CXLMemSimContext *ctx, CXLMemSimRequest *req, CXLMemSimR
         pthread_mutex_unlock(&ctx->lock);
         return -1;
     }
-    
+
     pthread_mutex_unlock(&ctx->lock);
     return 0;
 }
@@ -91,18 +115,18 @@ int cxlmemsim_init(const char *host, int port) {
         fprintf(stderr, "CXLMemSim already initialized\n");
         return -1;
     }
-    
+
     g_ctx = calloc(1, sizeof(CXLMemSimContext));
     if (!g_ctx) {
         perror("calloc");
         return -1;
     }
-    
+
     strncpy(g_ctx->host, host, sizeof(g_ctx->host) - 1);
     g_ctx->port = port;
     g_ctx->connected = false;
     pthread_mutex_init(&g_ctx->lock, NULL);
-    
+
     g_ctx->hotness_map_size = 1024 * 1024;
     g_ctx->hotness_map = calloc(g_ctx->hotness_map_size, sizeof(uint64_t));
     if (!g_ctx->hotness_map) {
@@ -111,29 +135,32 @@ int cxlmemsim_init(const char *host, int port) {
         g_ctx = NULL;
         return -1;
     }
-    
+
     if (connect_to_cxlmemsim(g_ctx) < 0) {
         fprintf(stderr, "Initial connection to CXLMemSim failed (will retry on first access)\n");
     }
-    
+
     return 0;
 }
 
 void cxlmemsim_cleanup(void) {
     if (!g_ctx) return;
-    
+
     pthread_mutex_lock(&g_ctx->lock);
     if (g_ctx->connected) {
-        close(g_ctx->socket_fd);
+        if (use_rdma_transport()) {
+            cxlmemsim_rdma_cleanup();
+        } else {
+            close(g_ctx->socket_fd);
+        }
     }
     pthread_mutex_unlock(&g_ctx->lock);
-    
+
     pthread_mutex_destroy(&g_ctx->lock);
     free(g_ctx->hotness_map);
     free(g_ctx);
     g_ctx = NULL;
 }
-
 MemTxResult cxl_type3_read(void* d, uint64_t addr, uint64_t *data,
     unsigned size, MemTxAttrs attrs) {
     if (!g_ctx) {
