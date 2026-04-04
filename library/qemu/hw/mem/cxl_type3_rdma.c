@@ -112,6 +112,7 @@ static int cxl_rdma_setup_resources(void)
     qp_attr.cap.max_recv_wr = RDMA_MAX_WR;
     qp_attr.cap.max_send_sge = 1;
     qp_attr.cap.max_recv_sge = 1;
+    qp_attr.cap.max_inline_data = 256;
     
     if (rdma_create_qp(g_rdma_conn.cm_id, g_rdma_conn.pd, &qp_attr)) {
         error_report("CXL RDMA: Failed to create QP");
@@ -119,6 +120,30 @@ static int cxl_rdma_setup_resources(void)
     }
     
     g_rdma_conn.qp = g_rdma_conn.cm_id->qp;
+    return 0;
+}
+
+static int cxl_rdma_post_receive(void)
+{
+    struct ibv_recv_wr wr, *bad_wr = NULL;
+    struct ibv_sge sge;
+
+    memset(&wr, 0, sizeof(wr));
+    memset(&sge, 0, sizeof(sge));
+
+    wr.wr_id = (uintptr_t)g_rdma_conn.buffer;
+    wr.sg_list = &sge;
+    wr.num_sge = 1;
+
+    sge.addr = (uintptr_t)g_rdma_conn.buffer;
+    sge.length = sizeof(RDMAMessage);
+    sge.lkey = g_rdma_conn.mr->lkey;
+
+    if (ibv_post_recv(g_rdma_conn.qp, &wr, &bad_wr)) {
+        error_report("CXL RDMA: Failed to post receive");
+        return -1;
+    }
+
     return 0;
 }
 
@@ -208,6 +233,12 @@ int cxl_memsim_rdma_connect(const char *server_addr, int port)
         pthread_mutex_unlock(&g_rdma_conn.lock);
         return -1;
     }
+
+    for (int i = 0; i < RDMA_MAX_WR; i++) {
+        if (cxl_rdma_post_receive() < 0) {
+            break;
+        }
+    }
     
     /* Connect */
     struct rdma_conn_param conn_param = {
@@ -253,7 +284,6 @@ int cxl_memsim_rdma_request(uint8_t op, uint64_t addr, uint64_t size,
 {
     RDMAMessage *msg;
     struct ibv_send_wr wr, *bad_wr;
-    struct ibv_recv_wr recv_wr, *bad_recv_wr;
     struct ibv_sge sge;
     struct ibv_wc wc;
     int ret;
@@ -279,29 +309,14 @@ int cxl_memsim_rdma_request(uint8_t op, uint64_t addr, uint64_t size,
         memcpy(msg->request.data, data, MIN(size, 64));
     }
     
-    /* Post receive for response */
-    sge.addr = (uintptr_t)&msg->response;
-    sge.length = sizeof(msg->response);
-    sge.lkey = g_rdma_conn.mr->lkey;
-    
-    memset(&recv_wr, 0, sizeof(recv_wr));
-    recv_wr.wr_id = 1;
-    recv_wr.sg_list = &sge;
-    recv_wr.num_sge = 1;
-    
-    if (ibv_post_recv(g_rdma_conn.qp, &recv_wr, &bad_recv_wr)) {
-        error_report("CXL RDMA: Failed to post receive");
-        pthread_mutex_unlock(&g_rdma_conn.lock);
-        return -1;
-    }
-    
     /* Post send */
-    sge.addr = (uintptr_t)&msg->request;
+    memset(&sge, 0, sizeof(sge));
+    sge.addr = (uintptr_t)g_rdma_conn.buffer;
     sge.length = sizeof(msg->request);
     sge.lkey = g_rdma_conn.mr->lkey;
     
     memset(&wr, 0, sizeof(wr));
-    wr.wr_id = 2;
+    wr.wr_id = (uintptr_t)g_rdma_conn.buffer;
     wr.opcode = IBV_WR_SEND;
     wr.send_flags = IBV_SEND_SIGNALED;
     wr.sg_list = &sge;
@@ -338,6 +353,11 @@ int cxl_memsim_rdma_request(uint8_t op, uint64_t addr, uint64_t size,
     /* Copy response */
     if (resp) {
         memcpy(resp, &msg->response, sizeof(*resp));
+    }
+
+    if (cxl_rdma_post_receive() < 0) {
+        pthread_mutex_unlock(&g_rdma_conn.lock);
+        return -1;
     }
     
     pthread_mutex_unlock(&g_rdma_conn.lock);

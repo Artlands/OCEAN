@@ -102,6 +102,7 @@ public:
     int start();
     int accept_connection();
     void handle_client();
+    void handle_clients_concurrently();
     void stop();
 };
 

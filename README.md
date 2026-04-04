@@ -61,7 +61,12 @@ make -j$(nproc)
 wget https://asplos.dev/about/bzImage
 gdown 1ga5CN3_H1qfReer99w_QcVOYb6R21JHI
 cp qemu.img qemu1.img
-./cxlmemsim_server --capacity=1024
+# Run the server persistently with tmux
+# If installed under user space, use: $HOME/.local/ocean/bin/cxlmemsim_server --capacity=1024
+tmux new -d -s ocean-server '$HOME/.local/ocean/bin/cxlmemsim_server --capacity=1024'
+tmux ls
+# Reattach later if needed
+tmux attach -t ocean-server
 sudo ../qemu_integration/launch_qemu_cxl1.sh # login as root with password: victor129
 # in qemu
 vi /usr/local/bin/*.sh
@@ -79,6 +84,14 @@ ls /dev/dax0.0
 ```
 
 ## Multi-Host RDMA
+
+For the current recommended end-to-end RDMA deployment flow, see [`qemu_integration/README.md`](qemu_integration/README.md). That guide covers:
+
+- setting up the cross-host VM network
+- preparing VM overlays and optional MPI shim injection
+- starting the RDMA `cxlmemsim` server
+- launching one VM per physical host or all 16 from a controller host
+
 
 For one VM per physical host over InfiniBand, use the RDMA-capable QEMU integration flow documented in [qemu_integration/README.md](qemu_integration/README.md).
 
@@ -109,10 +122,15 @@ bash qemu_integration/prepare_rdma_vm_images.sh 16 ./qemu.img
 bash qemu_integration/print_rdma_launch_plan.sh 16 <server_ib0_ip> 9999 10999
 
 # On the chosen server host
-cd qemu_integration/build
-./start_server_rdma.sh 9999 10999
+# You can use either qemu_integration/start_server_rdma.sh or the generated copy in
+# qemu_integration/build/; both locate the built server binary automatically.
+bash qemu_integration/start_server_rdma.sh 9999 10999
 
-# On each VM host
+# On a controller host, launch all VMs over SSH
+CXL_MEMSIM_HOST=<server_ib0_ip> SSH_USER=root QEMU_ACCEL=kvm \
+    bash script/launch_qemu_cxl_all_hosts.sh all
+
+# Or launch from each VM host individually
 export CXL_TRANSPORT_MODE=rdma
 export CXL_MEMSIM_HOST=<server_ib0_ip>
 export CXL_MEMSIM_PORT=9999

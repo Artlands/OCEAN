@@ -1,9 +1,9 @@
 [Unit]
 Description=Configure CXL Memory as NUMA Node
-After=sysinit.target
 After=systemd-modules-load.service
-Before=basic.target
-DefaultDependencies=no
+After=systemd-udev-settle.service
+After=local-fs.target
+Wants=systemd-udev-settle.service
 
 [Service]
 Type=oneshot
@@ -14,4 +14,4 @@ StandardError=journal
 TimeoutSec=60
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target

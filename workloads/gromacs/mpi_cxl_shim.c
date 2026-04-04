@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <mpi.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -302,6 +303,146 @@ static void shim_log(const char *level, const char *color, const char *format, .
 #define LOG_DEBUG(...)   if(getenv("CXL_SHIM_VERBOSE")) shim_log("DEBUG", CYAN, __VA_ARGS__)
 #define LOG_TRACE(...)   if(getenv("CXL_SHIM_TRACE")) shim_log("TRACE", MAGENTA, __VA_ARGS__)
 
+static bool try_parse_env_int(const char *name, int *value) {
+    const char *env = getenv(name);
+    char *end = NULL;
+    long parsed;
+
+    if (!env || !*env) {
+        return false;
+    }
+
+    errno = 0;
+    parsed = strtol(env, &end, 10);
+    if (errno != 0 || end == env || *end != 0 || parsed < 0 || parsed > INT_MAX) {
+        return false;
+    }
+
+    *value = (int)parsed;
+    return true;
+}
+
+static bool detect_preinit_world_rank(int *rank_out) {
+    static const char *rank_envs[] = {
+        "OMPI_COMM_WORLD_RANK",
+        "PMIX_RANK",
+        "PMI_RANK",
+        "MV2_COMM_WORLD_RANK",
+        "SLURM_PROCID",
+    };
+
+    for (size_t i = 0; i < sizeof(rank_envs) / sizeof(rank_envs[0]); i++) {
+        if (try_parse_env_int(rank_envs[i], rank_out)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool detect_preinit_local_rank(int *rank_out) {
+    static const char *rank_envs[] = {
+        "OMPI_COMM_WORLD_LOCAL_RANK",
+        "MPI_LOCALRANKID",
+        "MV2_COMM_WORLD_LOCAL_RANK",
+        "SLURM_LOCALID",
+    };
+
+    for (size_t i = 0; i < sizeof(rank_envs) / sizeof(rank_envs[0]); i++) {
+        if (try_parse_env_int(rank_envs[i], rank_out)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool detect_preinit_local_size(int *size_out) {
+    static const char *size_envs[] = {
+        "OMPI_COMM_WORLD_LOCAL_SIZE",
+        "MPI_LOCALNRANKS",
+        "MV2_COMM_WORLD_LOCAL_SIZE",
+    };
+
+    for (size_t i = 0; i < sizeof(size_envs) / sizeof(size_envs[0]); i++) {
+        if (try_parse_env_int(size_envs[i], size_out)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool should_reset_shared_state(void) {
+    int rank = -1;
+
+    if (!getenv("CXL_DAX_RESET")) {
+        return false;
+    }
+
+    if (detect_preinit_local_rank(&rank) || detect_preinit_world_rank(&rank)) {
+        if (rank != 0) {
+            LOG_DEBUG("Ignoring CXL_DAX_RESET on local rank %d; local rank 0 performs the reset\n",
+                      rank);
+        }
+        return rank == 0;
+    }
+
+    LOG_WARN("CXL_DAX_RESET is set but no pre-init rank metadata was found; allowing this process to reset shared state\n");
+    return true;
+}
+
+static bool cxl_header_is_fresh(const cxl_shm_header_t *header, size_t header_size) {
+    return header->magic == CXL_SHM_MAGIC &&
+           header->version == CXL_SHM_VERSION &&
+           header->initialized == 1 &&
+           atomic_load(&header->alloc_offset) == header_size &&
+           header->coll_max_ranks == CXL_MAX_RANKS;
+}
+
+static void wait_for_reset_owner(cxl_shm_header_t *header, size_t header_size) {
+    int rank = -1;
+    int wait_count = 0;
+
+    if (!detect_preinit_local_rank(&rank)) {
+        detect_preinit_world_rank(&rank);
+    }
+
+    while (!cxl_header_is_fresh(header, header_size)) {
+        __asm__ volatile("pause" ::: "memory");
+        if (++wait_count > 10000000) {
+            LOG_WARN("Rank %d waiting for local rank 0 to finish resetting shared state (magic=0x%lx, alloc_offset=%lu, coll_max_ranks=%u)\n",
+                     rank,
+                     (unsigned long)header->magic,
+                     (unsigned long)atomic_load(&header->alloc_offset),
+                     header->coll_max_ranks);
+            wait_count = 0;
+        }
+    }
+
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+}
+
+static bool should_enable_direct_mpi(int world_size) {
+    int local_size = 0;
+
+    if (!getenv("CXL_DIRECT")) {
+        LOG_INFO("CXL direct MPI communication disabled; using CXL allocator hooks only\n");
+        return false;
+    }
+
+    if (world_size > 1 &&
+        detect_preinit_local_size(&local_size) &&
+        local_size > 0 &&
+        local_size < world_size) {
+        LOG_WARN("CXL direct MPI communication disabled for multi-host run (local_size=%d, world_size=%d); shared collective state is node-local\n",
+                 local_size, world_size);
+        return false;
+    }
+
+    return true;
+}
+
 // ============================================================================
 // Remotable Pointer Functions
 // ============================================================================
@@ -383,6 +524,10 @@ static void init_cxl_memory(void) {
     const char *dax_path = getenv("CXL_DAX_PATH");
     const char *cxl_size_str = getenv("CXL_MEM_SIZE");
     size_t cxl_size = cxl_size_str ? strtoull(cxl_size_str, NULL, 0) : DEFAULT_CXL_SIZE;
+    const bool reset_requested = getenv("CXL_DAX_RESET") != NULL;
+    const bool reset_owner = should_reset_shared_state();
+    size_t header_size = sizeof(cxl_shm_header_t) + CXL_MAX_RANKS * sizeof(cxl_rank_mailbox_t);
+    header_size = (header_size + CXL_ALIGNMENT - 1) & ~(CXL_ALIGNMENT - 1);
 
     if (dax_path && strlen(dax_path) > 0) {
         // Use DAX device - open with O_RDWR for shared access
@@ -432,10 +577,11 @@ static void init_cxl_memory(void) {
 
         // For DAX, we need to coordinate allocation between processes
         // Use first cacheline as allocation counter
-        if (getenv("CXL_DAX_RESET")) {
-            // Only reset if explicitly requested
+        if (reset_owner) {
             memset(g_cxl.base, 0, CACHELINE_SIZE);
-            LOG_INFO("Reset DAX allocation counter\n");
+            LOG_INFO("Reset DAX allocation counter on local rank 0\n");
+        } else if (reset_requested) {
+            LOG_INFO("Skipping DAX reset on non-owner rank; waiting for local rank 0 initialization\n");
         }
 
         // DAX allocation starts after first cacheline
@@ -510,8 +656,12 @@ use_shm:
     g_cxl.header = (cxl_shm_header_t *)g_cxl.base;
     g_cxl.mailboxes = (cxl_rank_mailbox_t *)((char *)g_cxl.base + sizeof(cxl_shm_header_t));
 
-    // Check if we need to initialize (first process or reset requested)
-    bool need_init = (g_cxl.header->magic != CXL_SHM_MAGIC) || getenv("CXL_DAX_RESET");
+    // Check if we need to initialize (first process or local reset owner)
+    if (reset_requested && !reset_owner) {
+        wait_for_reset_owner(g_cxl.header, header_size);
+    }
+
+    bool need_init = (g_cxl.header->magic != CXL_SHM_MAGIC) || reset_owner;
 
     if (need_init) {
         LOG_INFO("Initializing CXL shared memory structures...\n");
@@ -524,8 +674,6 @@ use_shm:
         g_cxl.header->initialized = 1;
 
         // Set allocation offset after header and mailboxes
-        size_t header_size = sizeof(cxl_shm_header_t) + CXL_MAX_RANKS * sizeof(cxl_rank_mailbox_t);
-        header_size = (header_size + CXL_ALIGNMENT - 1) & ~(CXL_ALIGNMENT - 1);
         atomic_store(&g_cxl.header->alloc_offset, header_size);
 
         // Initialize all mailboxes
@@ -577,6 +725,13 @@ static void cxl_register_rank(int rank, int world_size) {
     g_cxl.my_rank = rank;
     g_cxl.world_size = world_size;
 
+    // Multi-VM runs do not share a single DAX control header across guests.
+    // Only enable the shim's direct MPI path when explicitly requested.
+    if (!should_enable_direct_mpi(world_size)) {
+        g_cxl.cxl_comm_enabled = false;
+        return;
+    }
+
     // Rank 0 resets collective synchronization state for new run
     if (rank == 0) {
         LOG_INFO("Rank 0 resetting collective synchronization state for new run\n");
@@ -626,8 +781,9 @@ static void cxl_register_rank(int rank, int world_size) {
     // Increment active rank count
     atomic_fetch_add(&g_cxl.header->num_ranks, 1);
 
-    // Enable CXL communication if CXL_DIRECT env is set or by default for DAX
-    g_cxl.cxl_comm_enabled = getenv("CXL_DIRECT") || (strcmp(g_cxl.type, "dax") == 0);
+    // CXL-direct MPI communication is opt-in. Without CXL_DIRECT, only the
+    // allocator hooks are enabled and MPI traffic falls back to the MPI stack.
+    g_cxl.cxl_comm_enabled = true;
 
     LOG_INFO("Registered rank %d/%d in CXL shared memory (pid=%d, host=%s, cxl_comm=%s)\n",
              rank, world_size, my_mailbox->pid, my_mailbox->hostname,

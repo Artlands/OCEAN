@@ -5,6 +5,7 @@
 #include <chrono>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <memory>
 
 RDMAConnection::RDMAConnection()
     : cm_id(nullptr), event_channel(nullptr), running(false) {
@@ -232,6 +233,97 @@ void RDMAConnection::cleanup_resources() {
     }
 }
 
+namespace {
+class RDMAServerSession : public RDMAConnection {
+public:
+    RDMAServerSession(struct rdma_cm_id* client_id,
+                      struct rdma_event_channel* session_event_channel,
+                      MessageHandler handler) {
+        cm_id = client_id;
+        event_channel = session_event_channel;
+        conn_info.context = cm_id->verbs;
+        message_handler = std::move(handler);
+        running = false;
+    }
+
+    int establish() {
+        if (setup_connection_resources() < 0) {
+            return -1;
+        }
+
+        struct ibv_qp_init_attr qp_attr;
+        setup_qp_parameters(qp_attr);
+
+        if (rdma_create_qp(cm_id, conn_info.pd, &qp_attr)) {
+            std::cerr << "Failed to create QP" << std::endl;
+            return -1;
+        }
+
+        conn_info.qp = cm_id->qp;
+
+        for (int i = 0; i < RDMA_MAX_WR; i++) {
+            if (post_receive() < 0) {
+                break;
+            }
+        }
+
+        struct rdma_conn_param conn_param;
+        memset(&conn_param, 0, sizeof(conn_param));
+        conn_param.initiator_depth = 1;
+        conn_param.responder_resources = 1;
+
+        if (rdma_accept(cm_id, &conn_param)) {
+            std::cerr << "Failed to accept connection" << std::endl;
+            return -1;
+        }
+
+        struct rdma_cm_event* event = nullptr;
+        if (rdma_get_cm_event(event_channel, &event)) {
+            std::cerr << "Failed to get CM event" << std::endl;
+            return -1;
+        }
+
+        bool established = (event->event == RDMA_CM_EVENT_ESTABLISHED);
+        if (!established) {
+            std::cerr << "RDMA connection failed" << std::endl;
+        }
+        rdma_ack_cm_event(event);
+
+        if (!established) {
+            return -1;
+        }
+
+        conn_info.connected = true;
+        running = true;
+        return 0;
+    }
+
+    void handle_client_loop() {
+        while (running && conn_info.connected) {
+            RDMAMessage recv_msg, send_msg;
+
+            if (receive_message(recv_msg) < 0) {
+                break;
+            }
+
+            if (message_handler) {
+                message_handler(recv_msg, send_msg);
+            } else {
+                send_msg.response.status = 0;
+                send_msg.response.latency_ns = 100;
+            }
+
+            if (send_message(send_msg) < 0) {
+                break;
+            }
+        }
+
+        conn_info.connected = false;
+        running = false;
+    }
+};
+}  // namespace
+
 // RDMAServer Implementation
 RDMAServer::RDMAServer(const std::string& addr, uint16_t port)
     : bind_addr(addr), port(port), listen_id(nullptr) {
@@ -365,6 +457,51 @@ void RDMAServer::handle_client() {
     }
 
     conn_info.connected = false;
+}
+
+void RDMAServer::handle_clients_concurrently() {
+    while (running) {
+        struct rdma_cm_event* event = nullptr;
+        if (rdma_get_cm_event(event_channel, &event)) {
+            if (running) {
+                std::cerr << "Failed to get CM event" << std::endl;
+            }
+            break;
+        }
+
+        if (event->event != RDMA_CM_EVENT_CONNECT_REQUEST) {
+            rdma_ack_cm_event(event);
+            continue;
+        }
+
+        struct rdma_cm_id* client_id = event->id;
+        struct rdma_event_channel* session_event_channel = rdma_create_event_channel();
+        if (!session_event_channel) {
+            std::cerr << "Failed to create event channel" << std::endl;
+            rdma_reject(client_id, nullptr, 0);
+            rdma_ack_cm_event(event);
+            continue;
+        }
+
+        if (rdma_migrate_id(client_id, session_event_channel)) {
+            std::cerr << "Failed to migrate RDMA ID to a session event channel" << std::endl;
+            rdma_reject(client_id, nullptr, 0);
+            rdma_destroy_event_channel(session_event_channel);
+            rdma_ack_cm_event(event);
+            continue;
+        }
+
+        rdma_ack_cm_event(event);
+
+        auto session = std::make_shared<RDMAServerSession>(client_id, session_event_channel, message_handler);
+        std::thread([session]() {
+            if (session->establish() == 0) {
+                std::cout << "RDMA client connected" << std::endl;
+                session->handle_client_loop();
+                std::cout << "RDMA client disconnected" << std::endl;
+            }
+        }).detach();
+    }
 }
 
 void RDMAServer::stop() {

@@ -272,13 +272,8 @@ public:
     void handle_rdma_client() {
         if (!rdma_server) return;
 
-        std::cout << "Waiting for RDMA client..." << std::endl;
-
-        if (rdma_server->accept_connection() == 0) {
-            std::cout << "RDMA client connected" << std::endl;
-            rdma_server->handle_client();
-            std::cout << "RDMA client disconnected" << std::endl;
-        }
+        std::cout << "Waiting for RDMA clients..." << std::endl;
+        rdma_server->handle_clients_concurrently();
     }
 
     uint64_t calculate_latency(size_t size, bool is_read, bool is_rdma = false) {
@@ -479,9 +474,7 @@ public:
         // RDMA accept thread (if enabled)
         if (rdma_server) {
             worker_threads.emplace_back([this]() {
-                while (running) {
-                    handle_rdma_client();
-                }
+                handle_rdma_client();
             });
         }
 

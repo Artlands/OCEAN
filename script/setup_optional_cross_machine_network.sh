@@ -87,6 +87,7 @@ MCAST="${MCAST:-239.1.1.1}"
 VXLAN_HOSTS_FILE="${VXLAN_HOSTS_FILE:-${SCRIPT_DIR}/hosts.txt}"
 VXLAN_PEERS="${VXLAN_PEERS:-}"
 BR_ADDR="${BR_ADDR:-none}"
+CLEAN_ALL_TAPS="${CLEAN_ALL_TAPS:-1}"
 TAP_START_INDEX=$((host_id - 1))
 VXLAN_IFACE="vxlan${VNI}"
 MODE="multicast"
@@ -99,10 +100,20 @@ if [[ -n "$VXLAN_PEERS" ]]; then
     MODE="unicast"
 fi
 
-for ((i = 0; i < num_vms; i++)); do
-    tap_index=$((TAP_START_INDEX + i))
-    ip link del "tap${tap_index}" 2>/dev/null || true
-done
+if [[ "$CLEAN_ALL_TAPS" == "1" ]]; then
+    shopt -s nullglob
+    for tap_path in /sys/class/net/tap*; do
+        tap_name="${tap_path##*/}"
+        [[ "$tap_name" =~ ^tap[0-9]+$ ]] || continue
+        ip link del "$tap_name" 2>/dev/null || true
+    done
+    shopt -u nullglob
+else
+    for ((i = 0; i < num_vms; i++)); do
+        tap_index=$((TAP_START_INDEX + i))
+        ip link del "tap${tap_index}" 2>/dev/null || true
+    done
+fi
 
 ip link del "$BR" 2>/dev/null || true
 ip link del "$VXLAN_IFACE" 2>/dev/null || true
@@ -161,5 +172,10 @@ if [[ "$BR_ADDR" == "none" ]]; then
     echo "Bridge address assignment skipped by default (BR_ADDR=none)."
 else
     echo "Bridge address: ${BR_ADDR}"
+fi
+if [[ "$CLEAN_ALL_TAPS" == "1" ]]; then
+    echo "Stale managed tap interfaces were cleaned before recreation (CLEAN_ALL_TAPS=1)."
+else
+    echo "Only the tap range for this host_id was cleaned (CLEAN_ALL_TAPS=0)."
 fi
 echo "Run bash script/verify_optional_cross_machine_network.sh ${num_vms} ${host_id} to verify as a normal user."

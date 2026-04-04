@@ -1635,11 +1635,9 @@ static int cxl_memsim_connect_locked(void) {
     /* Try RDMA connection if configured */
     if (g_memsim.transport_mode == CXL_TRANSPORT_RDMA) {
         if (cxl_memsim_rdma_available()) {
-            /* Use TCP port 9999 for RDMA-aware connections */
-            int connection_port = 9999;
             info_report("CXL Type3: Attempting RDMA connection to %s:%d", 
-                       g_memsim.host, connection_port);
-            int ret = cxl_memsim_rdma_connect(g_memsim.host, connection_port);
+                       g_memsim.host, g_memsim.port);
+            int ret = cxl_memsim_rdma_connect(g_memsim.host, g_memsim.port);
             if (ret == 0) {
                 g_memsim.connected = true;
                 info_report("CXL Type3: RDMA-mode connection successful");
@@ -1954,7 +1952,7 @@ MemTxResult cxl_type3_read(PCIDevice *d, hwaddr host_addr, uint64_t *data,
     }
 
     /* Forward to CXLMemSim if enabled */
-    if (g_memsim.enabled && g_memsim.connected) {
+    if (g_memsim.enabled) {
         CXLMemSimResponse resp = {0};
 
         /* Record wall-clock time before IPC for latency compensation */
@@ -2011,7 +2009,7 @@ MemTxResult cxl_type3_write(PCIDevice *d, hwaddr host_addr, uint64_t data,
     }
 
     /* Forward to CXLMemSim if enabled */
-    if (g_memsim.enabled && g_memsim.connected) {
+    if (g_memsim.enabled) {
         CXLMemSimResponse resp = {0};
 
         /* Record wall-clock time before IPC for latency compensation */
@@ -2115,33 +2113,6 @@ static uint64_t get_lsa(CXLType3Dev *ct3d, void *buf, uint64_t size,
         return 0;
     }
 
-    /* Route LSA reads through CXLMemSim server when connected */
-    if (g_memsim.enabled && g_memsim.connected &&
-        (g_memsim.transport_mode == CXL_TRANSPORT_TCP ||
-         g_memsim.transport_mode == CXL_TRANSPORT_RDMA)) {
-        uint64_t remaining = size;
-        uint64_t cur_offset = offset;
-        uint8_t *dst = (uint8_t *)buf;
-
-        while (remaining > 0) {
-            uint64_t chunk = MIN(remaining, 64);
-            CXLMemSimResponse resp = {0};
-
-            if (cxl_memsim_request_ext(CXL_OP_LSA_READ, cur_offset, chunk,
-                                       NULL, 0, 0, &resp) != 0 ||
-                resp.status != 0) {
-                error_report("CXL Type3: LSA read failed at offset 0x%lx",
-                             (unsigned long)cur_offset);
-                goto fallback_read;
-            }
-            memcpy(dst, resp.data, chunk);
-            dst += chunk;
-            cur_offset += chunk;
-            remaining -= chunk;
-        }
-        return size;
-    }
-
 fallback_read:
     mr = host_memory_backend_get_memory(ct3d->lsa);
     validate_lsa_access(mr, size, offset);
@@ -2159,34 +2130,6 @@ static void set_lsa(CXLType3Dev *ct3d, const void *buf, uint64_t size,
     void *lsa;
 
     if (!ct3d->lsa) {
-        return;
-    }
-
-    /* Route LSA writes through CXLMemSim server when connected */
-    if (g_memsim.enabled && g_memsim.connected &&
-        (g_memsim.transport_mode == CXL_TRANSPORT_TCP ||
-         g_memsim.transport_mode == CXL_TRANSPORT_RDMA)) {
-        uint64_t remaining = size;
-        uint64_t cur_offset = offset;
-        const uint8_t *src = (const uint8_t *)buf;
-
-        while (remaining > 0) {
-            uint64_t chunk = MIN(remaining, 64);
-            CXLMemSimResponse resp = {0};
-            uint8_t chunk_data[64];
-
-            memcpy(chunk_data, src, chunk);
-            if (cxl_memsim_request_ext(CXL_OP_LSA_WRITE, cur_offset, chunk,
-                                       chunk_data, 0, 0, &resp) != 0 ||
-                resp.status != 0) {
-                error_report("CXL Type3: LSA write failed at offset 0x%lx",
-                             (unsigned long)cur_offset);
-                goto fallback_write;
-            }
-            src += chunk;
-            cur_offset += chunk;
-            remaining -= chunk;
-        }
         return;
     }
 

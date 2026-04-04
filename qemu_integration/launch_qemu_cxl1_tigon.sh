@@ -1,5 +1,8 @@
 #!/bin/bash
 
+printf -v default_mac_suffix '%02x' 2
+VM_MAC=${VM_MAC:-52:54:00:00:00:${default_mac_suffix}}
+
 QEMU_BINARY=/opt/qemu-jic23/bin/qemu-system-x86_64
 CXL_MEMSIM_HOST=${CXL_MEMSIM_HOST:-127.0.0.1}
 CXL_MEMSIM_PORT=${CXL_MEMSIM_PORT:-9999}
@@ -20,7 +23,7 @@ exec $QEMU_BINARY \
     -kernel /home/exouser/projects/OCEAN/qemu_integration/build/bzImage \
     -append "root=/dev/sda rw console=ttyS0,115200 ignore_loglevel nokaslr nokaslr nosmp nopti nospectre_v2 mem=2G memmap=256M\$0x100000000" \
     -netdev tap,id=network0,ifname=tap1,script=no,downscript=no \
-    -device e1000,netdev=network0,mac=52:54:00:00:00:02 \
+    -device e1000,netdev=network0,mac="${VM_MAC}" \
     -drive file=/home/exouser/projects/OCEAN/qemu_integration/build/qemu1.img,index=0,media=disk,format=raw \
     -M q35,cxl=on -m 4G,maxmem=8G,slots=8 -smp 4 \
     -device pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.1 \
