@@ -243,11 +243,16 @@ Launch an explicit subset:
 bash script/launch_qemu_cxl_all_hosts.sh 2 3 4
 ```
 
-A common workflow is to start host `1` manually so you can log into `node0` and run benchmarks there, then use the all-host launcher for the rest:
+Launch all hosts directly from the controller host:
 
 ```bash
-bash qemu_integration/launch_qemu_cxl_host.sh 1
-bash script/launch_qemu_cxl_all_hosts.sh 2-15
+QEMU_ACCEL=kvm bash script/launch_qemu_cxl_all_hosts.sh all
+```
+
+After launch, from `rpc-94-1`, log into the first VM with:
+
+```bash
+ssh root@192.168.100.10
 ```
 
 By default the launcher uses:
@@ -283,31 +288,10 @@ bash qemu_integration/launch_qemu_cxl_host.sh <host_id>
 
 To stop detached VMs from one controller host, use the matching stop helper `script/stop_qemu_cxl_all_hosts.sh`. It accepts the same selectors as the launcher, including `all` and inclusive ranges like `2-15`.
 
-Stop every listed host:
+If you launched all hosts through the all-host launcher, stop them the same way:
 
 ```bash
 bash script/stop_qemu_cxl_all_hosts.sh all
-```
-
-Stop a range:
-
-```bash
-bash script/stop_qemu_cxl_all_hosts.sh 2-15
-```
-
-Stop an explicit subset:
-
-```bash
-bash script/stop_qemu_cxl_all_hosts.sh 2 3 4
-```
-
-If you used the common workflow of starting host `1` manually and launching `2-15` through the all-host launcher, stop them the same way:
-
-```bash
-# host 1 was started manually in the foreground
-# stop it with Ctrl-C in that terminal
-
-bash script/stop_qemu_cxl_all_hosts.sh 2-15
 ```
 
 The stop helper kills the QEMU process for each selected host by matching the derived TAP interface, so host `N` maps to `tap(N-1)`.
@@ -343,14 +327,14 @@ bash qemu_integration/start_server_rdma.sh 9999 10999
 Then either launch all VMs from the controller host as the normal user who owns the allocation:
 
 ```bash
+salloc --reservation=ocean -N16 --ntasks-per-node=1 --exclusive -w rpc-94-[1-16]
 QEMU_ACCEL=kvm bash script/launch_qemu_cxl_all_hosts.sh all
 ```
 
-Or launch only the remote hosts after starting host `1` manually:
+After launch, you can log into the first VM from `rpc-94-1`:
 
 ```bash
-bash qemu_integration/launch_qemu_cxl_host.sh 1
-bash script/launch_qemu_cxl_all_hosts.sh 2-15
+ssh root@192.168.100.10
 ```
 
 Or launch from each participating host individually:
